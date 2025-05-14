@@ -1,0 +1,9 @@
+appId: com.yourdomain.invoice-app
+files:
+  - build/**/*
+  - node_modules/**/*
+  - public/electron.js
+directories:
+  buildResources: assets
+extraResources:
+  - node_modules/electron-is-dev/**/*
