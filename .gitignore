@@ -1,24 +1,53 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
+# Node modules
 /node_modules
-/.pnp
-.pnp.js
 
-# testing
-/coverage
-
-# production
+# Build outputs
 /build
+/dist
 
-# misc
-.DS_Store
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Electron build output
+/*.asar
+*.exe
+*.dmg
+*.AppImage
+*.snap
 
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-/dist
+
+# IDE & System files
+.DS_Store
+.vscode/
+Thumbs.db
+
+# Testing
+/coverage
+
+# Environment variables
+.env
+.env.*.local
+
+# Misc
+.pnp
+.pnp.js
+
+# Tailwind cache
+.tailwind*
+
+# Electron Packager cache
+*.tgz
+*.nupkg
+*.blockmap
+
+# Windows Installer junk
+*.msi
+*.tmp
+*.bak
+
+# Mac specific
+*.DS_Store
+
+# GitHub Desktop backup
+*.orig
