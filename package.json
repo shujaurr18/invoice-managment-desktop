@@ -26,8 +26,8 @@
     "build": "react-scripts build && node scripts/copy-electron.js",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-"electron-dev": "set ELECTRON_START_URL=http://localhost:3000 && concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron-pack": "electron-builder -c.extraMetadata.main=build/electron.js",
+    "electron-dev": "set ELECTRON_START_URL=http://localhost:3000 && concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron-pack": "electron-builder",
     "preelectron-pack": "npm run build"
   },
   "main": "build/electron.js",
@@ -44,7 +44,8 @@
     },
     "win": {
       "target": "nsis"
-    }
+    },
+    "asar": true
   },
   "eslintConfig": {
     "extends": [
