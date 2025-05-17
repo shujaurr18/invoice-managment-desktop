@@ -4,12 +4,13 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_AUTH_DOMAIN",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_STORAGE_BUCKET",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDFbX0UDFYpap4wQm_LDYHQCXisc54--fg",
+  authDomain: "invoice-managment-bfb4c.firebaseapp.com",
+  projectId: "invoice-managment-bfb4c",
+  storageBucket: "invoice-managment-bfb4c.firebasestorage.app",
+  messagingSenderId: "606507968855",
+  appId: "1:606507968855:web:549e675e50d984170e7612",
+  measurementId: "G-KSP5RSVP4N"
 };
 
 // Initialize Firebase

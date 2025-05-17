@@ -1,347 +1,431 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useDropzone } from 'react-dropzone';
+import Tesseract from 'tesseract.js';
+import { db, storage } from '../firebase/config';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import extractBBVADirectDebitData from './extractBBVADirectDebitData';
+import { enhancedImageQualityCheck } from './imageQuality';
 
 const InvoiceScanner = () => {
-  // State for tracking the upload and processing
-  const [uploadState, setUploadState] = useState('initial'); // initial, uploading, processing, completed
   const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [extractedData, setExtractedData] = useState(null);
+  const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
-  
-  // Extracted invoice data (dummy data)
-  const [extractedData, setExtractedData] = useState({
-    invoiceNumber: '',
-    date: '',
-    vendor: '',
-    nifCif: '',
-    items: [],
-    subtotal: '',
-    vat: '',
-    vatRate: '',
-    total: ''
+  const [isSaving, setIsSaving] = useState(false);
+  const [imageQuality, setImageQuality] = useState(null);
+  const [ocrText, setOcrText] = useState('');
+  const [missingFields, setMissingFields] = useState([]);
+  const [showRawText, setShowRawText] = useState(false);
+
+  const onDrop = useCallback(async (acceptedFiles) => {
+    setError(null);
+    setExtractedData(null);
+    setImageQuality(null);
+    setOcrText('');
+    setProgress(0);
+    setMissingFields([]);
+
+    if (acceptedFiles.length === 0) {
+      setError('Please upload a valid image (JPEG, PNG) or PDF.');
+      return;
+    }
+
+    const file = acceptedFiles[0];
+    setFile(file);
+
+    // Create preview
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPreview(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: {
+      'image/*': ['.jpeg', '.jpg', '.png'],
+      'application/pdf': ['.pdf']
+    },
+    maxFiles: 1,
+    onDrop: onDrop
   });
-  
-  // Handle file selection
-  const handleFileSelect = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      const selectedFile = e.target.files[0];
-      setFile(selectedFile);
-      // Simulate upload progress
-      setUploadState('uploading');
-      simulateUploadProgress();
+
+  // Check image quality when preview is available
+  useEffect(() => {
+    if (preview && file && file.type.startsWith('image/')) {
+      const img = new Image();
+      img.src = preview;
+      img.onload = () => {
+        const qualityResult = enhancedImageQualityCheck(img);
+        setImageQuality(qualityResult);
+        
+        // Auto-process if image quality is good enough
+        if (qualityResult.score >= 60) {
+          processFile();
+        }
+      };
+    }
+  }, [preview, file]);
+
+  const processFile = async () => {
+    if (!file) {
+      setError('Please upload a file first.');
+      return;
+    }
+
+    setIsProcessing(true);
+    setError(null);
+    setExtractedData(null);
+    setProgress(0);
+    setMissingFields([]);
+
+    try {
+      // Check if it's a PDF
+      if (file.type === 'application/pdf') {
+        setError('PDF processing is not yet supported. Please upload an image.');
+        setIsProcessing(false);
+        return;
+      }
+
+      // Process with Tesseract - optimized settings for Spanish BBVA receipts
+      const result = await Tesseract.recognize(
+        preview,
+        'spa', // Spanish language
+        {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              setProgress(m.progress * 100);
+            }
+          },
+          // Optimized Tesseract settings for receipt recognition
+          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,:-/€$@()% ',
+          tessjs_create_hocr: '0',
+          tessjs_create_tsv: '0',
+          preserve_interword_spaces: '1',
+          tessjs_image_rectangle_left: '0',
+          tessjs_image_rectangle_top: '0',
+          tessjs_image_rectangle_width: '0',
+          tessjs_image_rectangle_height: '0'
+        }
+      );
+
+      // Store the raw OCR text for debugging
+      setOcrText(result.data.text);
+      console.log("OCR Text:", result.data.text);
+
+      // Extract data from the OCR result - directly call the function
+      const extractionResult = extractBBVADirectDebitData(result.data.text);
+      
+      console.log("Extraction Result:", extractionResult);
+      
+      setExtractedData(extractionResult.data);
+      setMissingFields(extractionResult.missingFields);
+      setProgress(100);
+
+      // Show warning if there are missing fields
+      if (extractionResult.missingFields.length > 0) {
+        setError(`Warning: Some fields could not be detected: ${extractionResult.missingFields.join(', ')}. Please verify and complete manually.`);
+      }
+
+    } catch (err) {
+      console.error('Error processing file:', err);
+      setError(`Error processing file: ${err.message}. Please try again.`);
+    } finally {
+      setIsProcessing(false);
     }
   };
-  
-  // Simulate upload progress
-  const simulateUploadProgress = () => {
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 5;
-      setProgress(progress);
-      
-      if (progress >= 100) {
-        clearInterval(interval);
-        setUploadState('processing');
-        setTimeout(() => {
-          setUploadState('completed');
-          // Set dummy extracted data
-          setExtractedData({
-            invoiceNumber: 'F-2025-1234',
-            date: '05/05/2025',
-            vendor: 'Suministros Madrid S.L.',
-            nifCif: 'B12345678',
-            items: [
-              { description: 'Office Supplies', quantity: 10, unitPrice: '12.50', amount: '125.00' },
-              { description: 'Software License', quantity: 1, unitPrice: '299.00', amount: '299.00' }
-            ],
-            subtotal: '424.00',
-            vatRate: '21%',
-            vat: '89.04',
-            total: '513.04'
-          });
-        }, 2000);
-      }
-    }, 100);
+
+  const saveInvoice = async () => {
+    if (!extractedData || !file) {
+      setError('No data to save. Please process a receipt first.');
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+
+    try {
+      // Upload file to Firebase Storage
+      const storageRef = ref(storage, `receipts/${Date.now()}_${file.name}`);
+      const snapshot = await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(snapshot.ref);
+
+      // Save data to Firestore
+      const docRef = await addDoc(collection(db, 'receipts'), {
+        ...extractedData,
+        fileUrl: downloadURL,
+        fileName: file.name,
+        fileType: file.type,
+        createdAt: serverTimestamp(),
+        status: 'pending',
+        missingFields: missingFields.length > 0 ? missingFields : [],
+        rawOcrText: ocrText // Save the raw OCR text for debugging
+      });
+
+      // Clear form
+      setFile(null);
+      setPreview(null);
+      setExtractedData(null);
+      setProgress(0);
+      setImageQuality(null);
+      setOcrText('');
+      setMissingFields([]);
+
+      alert('Receipt saved successfully!');
+    } catch (err) {
+      console.error('Error saving receipt:', err);
+      setError('Error saving receipt. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
-  
-  // Handle saving the extracted data
-  const handleSaveInvoice = () => {
-    alert('Invoice data saved successfully!');
-    resetForm();
+
+  // Helper function to get field hint based on field name
+  const getFieldHint = (fieldName) => {
+    const hints = {
+      acreedor: 'Name of the creditor entity',
+      idAcreedor: 'Creditor ID code (Format: ESxxxxx)',
+      refMandato: 'Mandate reference number',
+      vencimiento: 'Due date (DD-MM-YYYY)',
+      refAdeudo: 'Direct debit reference',
+      deudor: 'Debtor full name',
+      concepto: 'Charge description',
+      importeTotal: 'Total amount to pay',
+      numAdeudo: 'Debit number',
+      titular: 'Account holder name',
+      oficina: 'Bank office',
+      fecha: 'Transaction date',
+      iban: 'Bank account number (IBAN)',
+      cargo: 'Charge type',
+    };
+    return hints[fieldName] || '';
   };
-  
-  // Reset the form
-  const resetForm = () => {
-    setFile(null);
-    setUploadState('initial');
-    setProgress(0);
-    setExtractedData({
-      invoiceNumber: '',
-      date: '',
-      vendor: '',
-      nifCif: '',
-      items: [],
-      subtotal: '',
-      vat: '',
-      vatRate: '',
-      total: ''
-    });
+
+  // Helper function to check if a field is missing
+  const isFieldMissing = (fieldName) => {
+    // Convert fieldName to match format in missingFields
+    const fieldMapping = {
+      'acreedor': 'Creditor',
+      'idAcreedor': 'Creditor ID',
+      'refMandato': 'Mandate Reference',
+      'vencimiento': 'Due Date',
+      'refAdeudo': 'Debit Reference',
+      'deudor': 'Debtor',
+      'importeTotal': 'Total Amount',
+      'iban': 'IBAN'
+    };
+    
+    return missingFields.includes(fieldMapping[fieldName] || '');
   };
-  
+
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-800">Scan Invoice</h1>
-        <div className="text-sm text-gray-500">
-          Extract data automatically from PDFs and images
-        </div>
-      </div>
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-6">BBVA Direct Debit Scanner</h1>
       
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        {/* Step 1: File Upload Section (shown when in initial state) */}
-        {uploadState === 'initial' && (
-          <div className="space-y-6">
-            <h2 className="text-lg font-medium text-gray-800">Upload Invoice</h2>
-            <p className="text-gray-600">Select a PDF or image file containing the invoice.</p>
-            
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center">
-              <input
-                type="file"
-                id="invoice-file"
-                className="hidden"
-                accept=".pdf,.jpg,.jpeg,.png"
-                onChange={handleFileSelect}
-              />
-              <div className="space-y-4">
-                <div className="flex justify-center">
-                  <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                  </svg>
-                </div>
-                <p className="text-sm text-gray-500">Drag and drop your invoice here, or</p>
-                <button 
-                  className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700"
-                  onClick={() => document.getElementById('invoice-file').click()}
-                >
-                  Browse Files
-                </button>
-                <p className="text-xs text-gray-500">Supported formats: PDF, JPG, PNG</p>
+      {/* Dropzone */}
+      <div 
+        {...getRootProps()} 
+        className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer mb-6
+          ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-500'}`}
+      >
+        <input {...getInputProps()} />
+        {preview ? (
+          <div className="space-y-4">
+            <img src={preview} alt="Preview" className="max-h-64 mx-auto" />
+            <p className="text-sm text-gray-600">{file.name}</p>
+            {imageQuality && (
+              <div className={`text-sm mt-2 ${
+                imageQuality.score < 50 ? 'text-red-500' : 
+                imageQuality.score < 70 ? 'text-yellow-500' : 'text-green-500'
+              }`}>
+                {imageQuality.message}
               </div>
-            </div>
+            )}
+          </div>
+        ) : (
+          <div>
+            <p className="text-gray-600">
+              Drag and drop a receipt image here, or click to select
+            </p>
+            <p className="text-sm text-gray-500 mt-2">
+              Supported formats: JPEG, PNG
+            </p>
           </div>
         )}
-        
-        {/* Step 2: Progress Indicators */}
-        {(uploadState === 'uploading' || uploadState === 'processing') && (
-          <div className="space-y-6">
-            <h2 className="text-lg font-medium text-gray-800">
-              {uploadState === 'uploading' ? 'Uploading File...' : 'Processing Invoice...'}
-            </h2>
-            
-            {file && (
-              <div className="flex items-center space-x-4 p-4 bg-gray-50 rounded-lg">
-                <div className="flex-shrink-0">
-                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                  </svg>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 truncate">
-                    {file.name}
-                  </p>
-                  <p className="text-sm text-gray-500">
-                    {(file.size / 1024).toFixed(1)} KB
-                  </p>
-                </div>
+      </div>
+
+      {/* Progress Bar */}
+      {isProcessing && (
+        <div className="mb-6">
+          <div className="w-full bg-gray-200 rounded-full h-2.5">
+            <div 
+              className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <p className="text-sm text-gray-600 mt-2">
+            Processing: {Math.round(progress)}%
+          </p>
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && (
+        <div className={`border px-4 py-3 rounded mb-6 ${
+          error.startsWith('Warning:') ? 'bg-yellow-100 border-yellow-400 text-yellow-700' : 'bg-red-100 border-red-400 text-red-700'
+        }`}>
+          {error}
+        </div>
+      )}
+
+      {/* OCR Text Toggle */}
+      {ocrText && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowRawText(!showRawText)}
+            className="text-blue-500 hover:text-blue-700 text-sm"
+          >
+            {showRawText ? 'Hide OCR text' : 'Show OCR text (for debugging)'}
+          </button>
+          
+          {showRawText && (
+            <div className="mt-2 p-4 bg-gray-100 rounded text-sm font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+              {ocrText}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Extracted Data Display */}
+      {extractedData && (
+        <div className="mt-8">
+          <h2 className="text-xl font-semibold mb-4">Extracted Data</h2>
+          <div className="bg-white shadow rounded-lg p-6">
+            {/* Show summary of missing fields */}
+            {missingFields.length > 0 && (
+              <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                <h3 className="text-sm font-medium text-yellow-800">Missing Fields</h3>
+                <ul className="mt-1 text-xs text-yellow-700 list-disc pl-5">
+                  {missingFields.map((field, index) => (
+                    <li key={index}>{field}</li>
+                  ))}
+                </ul>
               </div>
             )}
             
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">
-                  {uploadState === 'uploading' ? 'Uploading...' : 'Extracting data...'}
-                </span>
-                <span className="text-gray-700 font-medium">{progress}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div 
-                  className="bg-indigo-600 h-2 rounded-full" 
-                  style={{ width: `${progress}%` }}
-                ></div>
-              </div>
-              {uploadState === 'processing' && (
-                <p className="text-sm text-gray-500 italic">
-                  Using AI to identify invoice elements. This may take a moment...
-                </p>
-              )}
-            </div>
-            
-            <button 
-              className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
-              onClick={resetForm}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-        
-        {/* Step 3: Extracted Data (shown when completed) */}
-        {uploadState === 'completed' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-lg font-medium text-gray-800">Extracted Invoice Data</h2>
-              <span className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full font-medium">
-                Data extracted successfully
-              </span>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Invoice Number</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.invoiceNumber} 
-                    onChange={(e) => setExtractedData({...extractedData, invoiceNumber: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Show all fields, including those with empty values */}
+              {Object.keys({
+                cargo: '',
+                acreedor: '',
+                idAcreedor: '',
+                refMandato: '',
+                vencimiento: '',
+                refAdeudo: '',
+                deudor: '',
+                concepto: '',
+                importeTotal: '',
+                numAdeudo: '',
+                titular: '',
+                oficina: '',
+                fecha: '',
+                iban: ''
+              }).map((key) => {
+                const value = extractedData[key] || '';
+                const isMissing = isFieldMissing(key);
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Date</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.date} 
-                    onChange={(e) => setExtractedData({...extractedData, date: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-              </div>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Vendor/Supplier</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.vendor} 
-                    onChange={(e) => setExtractedData({...extractedData, vendor: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">NIF/CIF</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.nifCif} 
-                    onChange={(e) => setExtractedData({...extractedData, nifCif: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-              </div>
-            </div>
-            
-            <div className="space-y-4">
-              <h3 className="text-md font-medium text-gray-800">Items</h3>
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Description
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Quantity
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Unit Price
-                      </th>
-                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Amount
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {extractedData.items.map((item, index) => (
-                      <tr key={index}>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {item.description}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {item.quantity}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          €{item.unitPrice}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          €{item.amount}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Subtotal</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.subtotal} 
-                    onChange={(e) => setExtractedData({...extractedData, subtotal: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">VAT Rate</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.vatRate} 
-                    onChange={(e) => setExtractedData({...extractedData, vatRate: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">VAT Amount</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.vat} 
-                    onChange={(e) => setExtractedData({...extractedData, vat: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-              </div>
-              
-              <div className="flex justify-end">
-                <div className="w-full md:w-1/3">
-                  <label className="block text-sm font-medium text-gray-700">Total Amount</label>
-                  <input 
-                    type="text" 
-                    value={extractedData.total} 
-                    onChange={(e) => setExtractedData({...extractedData, total: e.target.value})}
-                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  />
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex justify-end space-x-4">
-              <button 
-                className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
-                onClick={resetForm}
-              >
-                Cancel
-              </button>
-              <button 
-                className="px-4 py-2 bg-indigo-600 border border-transparent rounded-md text-sm font-medium text-white hover:bg-indigo-700"
-                onClick={handleSaveInvoice}
-              >
-                Save Invoice
-              </button>
+                return (
+                  <div key={key} className="space-y-1">
+                    <label className={`block text-sm font-medium ${isMissing ? 'text-red-500' : 'text-gray-500'}`}>
+                      {key.charAt(0).toUpperCase() + key.slice(1)}
+                      {isMissing && ' *'}
+                    </label>
+                    <input
+                      type="text"
+                      value={value}
+                      onChange={(e) => {
+                        setExtractedData({
+                          ...extractedData,
+                          [key]: e.target.value
+                        });
+                        
+                        // Remove from missing fields if user edits
+                        if (e.target.value && isMissing) {
+                          const fieldMapping = {
+                            'acreedor': 'Creditor',
+                            'idAcreedor': 'Creditor ID',
+                            'refMandato': 'Mandate Reference',
+                            'vencimiento': 'Due Date',
+                            'refAdeudo': 'Debit Reference',
+                            'deudor': 'Debtor',
+                            'importeTotal': 'Total Amount',
+                            'iban': 'IBAN'
+                          };
+                          
+                          setMissingFields(missingFields.filter(field => 
+                            field !== fieldMapping[key]
+                          ));
+                        }
+                      }}
+                      className={`mt-1 block w-full border rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm
+                        ${isMissing ? 'border-red-300 bg-red-50' : value ? 'border-gray-300' : 'border-gray-200 bg-gray-50'}`}
+                      placeholder={`Enter ${key}`}
+                      title={getFieldHint(key)}
+                    />
+                    {getFieldHint(key) && (
+                      <p className="text-xs text-gray-400">{getFieldHint(key)}</p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
-        )}
+        </div>
+      )}
+
+      {/* Action Buttons */}
+      <div className="space-x-4 mt-6">
+        <button
+          onClick={processFile}
+          disabled={!file || isProcessing || isSaving}
+          className={`px-4 py-2 rounded ${
+            !file || isProcessing || isSaving
+              ? 'bg-gray-300 cursor-not-allowed'
+              : 'bg-blue-500 hover:bg-blue-600 text-white'
+          }`}
+        >
+          {isProcessing ? 'Processing...' : 'Process Receipt'}
+        </button>
+
+        <button
+          onClick={saveInvoice}
+          disabled={!extractedData || isProcessing || isSaving}
+          className={`px-4 py-2 rounded ${
+            !extractedData || isProcessing || isSaving
+              ? 'bg-gray-300 cursor-not-allowed'
+              : 'bg-green-500 hover:bg-green-600 text-white'
+          }`}
+        >
+          {isSaving ? 'Saving...' : 'Save Receipt'}
+        </button>
       </div>
+
+      {/* Tips */}
+      {!extractedData && !isProcessing && (
+        <div className="mt-8 bg-blue-50 p-4 rounded-lg">
+          <h3 className="font-medium text-blue-800">Tips for better results:</h3>
+          <ul className="mt-2 text-sm text-blue-700 list-disc pl-5">
+            <li>Make sure the image has good lighting and is well-focused</li>
+            <li>Avoid shadows or reflections on the document</li>
+            <li>Capture the entire receipt in the image, without cutting off edges</li>
+            <li>Use a high resolution (at least 1000x1000 pixels)</li>
+            <li>Ensure that text is clearly legible</li>
+          </ul>
+        </div>
+      )}
     </div>
   );
 };
